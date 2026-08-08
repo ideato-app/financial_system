@@ -79,16 +79,23 @@ class Index extends Component
             return $value !== null && $value !== '';
         });
 
-        $allTransactions = $this->listTransactionsUseCase->execute($filters);
-        $total = count($allTransactions);
+        $filters['perPage'] = $this->perPage;
+        $filters['page']    = $this->lazyLoading ? 1 : $this->currentPage;
         if ($this->lazyLoading) {
-            $this->transactions = array_slice($allTransactions, 0, $this->perPage * $this->currentPage);
-        } else {
-            $this->currentPage = max(1, min($this->currentPage, ceil($total / $this->perPage)));
-            $offset = ($this->currentPage - 1) * $this->perPage;
-            $this->transactions = array_slice($allTransactions, $offset, $this->perPage);
+            // For lazy loading accumulate pages by increasing perPage
+            $filters['perPage'] = $this->perPage * $this->currentPage;
+            $filters['page']    = 1;
         }
+
+        $result = $this->listTransactionsUseCase->execute($filters);
+        $total  = $result['total_count'] ?? 0;
+
+        $this->transactions     = $result['transactions'] ?? [];
         $this->totalTransactions = $total;
+
+        if (!$this->lazyLoading) {
+            $this->currentPage = max(1, min($this->currentPage, (int) ceil($total / $this->perPage) ?: 1));
+        }
     }
 
     public function updatedPerPage($value)

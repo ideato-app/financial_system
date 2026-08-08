@@ -19,6 +19,17 @@ class Index extends Component
         $this->perPage += 30;
         $this->generateReport();
     }
+
+    public function mount()
+    {
+    $this->startDate = now()->subDays(30)->format('Y-m-d');
+    $this->endDate = now()->format('Y-m-d');
+    $this->users = User::all();
+    $this->branches = Branch::all();
+    $this->customers = Customer::select('id', 'name', 'customer_code')->get();
+    $this->selectedBranches = [];
+    $this->generateReport();
+    }
     public $perPage = 30;
     public $hasMore = false;
     public $startDate;
@@ -41,18 +52,6 @@ class Index extends Component
     public $safeBalances = [];
     public $lineBalances = [];
     public $customerBalances = [];
-
-    public function mount()
-    {
-    $this->startDate = now()->subDays(30)->format('Y-m-d');
-    $this->endDate = now()->format('Y-m-d');
-    $this->users = User::all();
-    $this->branches = Branch::all();
-    $this->customers = Customer::all();
-    $this->selectedBranches = [];
-    $this->generateReport();
-    }
-
 
     public function generateReport()
     {
@@ -117,21 +116,23 @@ class Index extends Component
         $filters['sortDirection'] = $this->sortDirection;
         
         // Get unified transactions with proper calculations
+        $filters['perPage'] = $this->perPage;
+        $filters['page']    = 1;
         $result = $repository->allUnified($filters);
         $all = collect($result['transactions']);
-        
+
         // Apply pagination
-        $this->totalCount = $all->count();
-        $this->hasMore = $all->count() > $this->perPage;
-        
+        $this->totalCount = $result['total_count'] ?? $all->count();
+        $this->hasMore = $this->totalCount > $this->perPage;
+
         // Set line transfer commissions to 0 for display purposes only
-        $displayTransactions = $all->take($this->perPage)->map(function ($transaction) {
+        $displayTransactions = $all->map(function ($transaction) {
             if (strtolower($transaction['transaction_type']) === 'line_transfer') {
-                $transaction['commission'] = 0; // Show 0 commission for line transfers in index
+                $transaction['commission'] = 0;
             }
             return $transaction;
         });
-        
+
         $this->transactions = $displayTransactions->all();
 
         // Use the accurate financial summary from the repository

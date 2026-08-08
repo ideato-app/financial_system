@@ -127,8 +127,8 @@ class Enhanced extends Component
             $this->employees = User::where('branch_id', $user->branch_id)->get();
         }
 
-        // Load customers
-        $this->customers = Customer::all();
+        // Load customers (id/name/code only to avoid serializing full rows)
+        $this->customers = Customer::select('id', 'name', 'customer_code')->get();
     }
 
     public function updatedReportType()
@@ -280,20 +280,22 @@ class Enhanced extends Component
 
     private function generateTransactionReport($filters)
     {
-        // Fetch all filtered transactions (ordinary + cash) from repository
+        // Fetch paginated transactions from repository
+        $filters['perPage'] = $this->perPage;
+        $filters['page']    = 1;
         $result = $this->getTransactionRepository()->allUnified($filters);
         $allTransactions = collect($result['transactions']);
 
-        // Apply pagination and modify line transfer commissions for display
-        $paginatedTransactions = $allTransactions->take($this->perPage)->map(function ($transaction) {
+        // Modify line transfer commissions for display
+        $paginatedTransactions = $allTransactions->map(function ($transaction) {
             if (strtolower($transaction['transaction_type']) === 'line_transfer') {
-                $transaction['commission'] = 0; // Show 0 commission for line transfers in table
+                $transaction['commission'] = 0;
             }
             return $transaction;
         })->all();
 
         $this->transactions = $paginatedTransactions;
-        $this->totalCount = $allTransactions->count();
+        $this->totalCount = $result['total_count'] ?? $allTransactions->count();
         $this->hasMore = $this->totalCount > $this->perPage;
 
         // Always exclude line transfer commissions from totals unless explicitly filtering for line_transfer

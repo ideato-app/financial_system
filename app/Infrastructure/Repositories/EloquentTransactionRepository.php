@@ -89,6 +89,10 @@ class EloquentTransactionRepository implements TransactionRepository
 
     public function filter(array $filters = []): array
     {
+        $perPage = (int)($filters['perPage'] ?? 1000);
+        $page    = max(1, (int)($filters['page'] ?? 1));
+        $limit   = $perPage * $page;
+
         // Ordinary transactions
         $query = EloquentTransaction::query();
         // Flag to skip cash transactions if filtering by transfer line
@@ -204,7 +208,11 @@ class EloquentTransactionRepository implements TransactionRepository
                 $q->whereRaw('LOWER(reference_number) LIKE ?', ['%' . strtolower($refNumber) . '%']);
             });
         }
-        $ordinaryTxs = $query->with(['agent', 'agent.branch', 'line', 'line.branch'])->get()->map(function ($transaction) {
+        $ordinaryFilterCount = (clone $query)->count();
+        $ordinaryTxs = $query->with(['agent', 'agent.branch', 'line', 'line.branch'])
+            ->orderBy('transaction_date_time', 'desc')
+            ->limit($limit)
+            ->get()->map(function ($transaction) {
             $transactionArray = $transaction->toArray();
             $transactionArray['agent_name'] = $transaction->agent ? $transaction->agent->name : 'N/A';
 
@@ -232,6 +240,7 @@ class EloquentTransactionRepository implements TransactionRepository
 
         // Cash transactions - skip if filtering by transfer line
         $cashTxs = collect();
+        $cashFilterCount = 0;
         if (!$skipCashTransactions) {
             $cash = CashTransaction::query();
             // Date filters re-enabled
@@ -288,7 +297,11 @@ class EloquentTransactionRepository implements TransactionRepository
                     $q->whereRaw('LOWER(reference_number) LIKE ?', ['%' . strtolower($refNumber) . '%']);
                 });
             }
-            $cashTxs = $cash->with(['agent', 'agent.branch', 'safe', 'safe.branch'])->get()->map(function ($transaction) {
+            $cashFilterCount = (clone $cash)->count();
+            $cashTxs = $cash->with(['agent', 'agent.branch', 'safe', 'safe.branch'])
+                ->orderBy('transaction_date_time', 'desc')
+                ->limit($limit)
+                ->get()->map(function ($transaction) {
                 // Handle expense withdrawals - they should be deducted from branch-specific profit
                 $commission = 0; // Cash transactions have no commission
                 $deduction = 0;
@@ -386,14 +399,19 @@ class EloquentTransactionRepository implements TransactionRepository
             $netProfit = -$lineTransferFees; // Show as negative (expense)
         }
 
+        $allSorted = $all->values();
+        $filterTotalCount = $ordinaryFilterCount + $cashFilterCount;
+        $paginated = $allSorted->slice(($page - 1) * $perPage, $perPage)->values();
+
         return [
-            'transactions' => $all->values()->all(),
+            'transactions' => $paginated->all(),
+            'total_count'  => $filterTotalCount,
             'totals' => [
                 'total_transferred' => $totalTransferred,
                 'total_commission' => $totalCommission,
                 'total_deductions' => $totalDeductions,
                 'net_profit' => $netProfit,
-                'branch_profits' => $branchProfits, // Add branch-specific profits for debugging
+                'branch_profits' => $branchProfits,
             ],
         ];
     }
@@ -432,6 +450,10 @@ class EloquentTransactionRepository implements TransactionRepository
      */
     public function allUnified(array $filters = []): array
     {
+        $perPage = (int)($filters['perPage'] ?? 30);
+        $page    = max(1, (int)($filters['page'] ?? 1));
+        $limit   = $perPage * $page; // over-fetch up to current page boundary
+
         // Flag to skip cash transactions if filtering by transfer line
         $skipCashTransactions = false;
 
@@ -546,7 +568,12 @@ class EloquentTransactionRepository implements TransactionRepository
                 $q->whereRaw('LOWER(reference_number) LIKE ?', ['%' . strtolower($refNumber) . '%']);
             });
         }
-        $ordinaryTxs = $ordinary->with(['agent', 'agent.branch', 'line', 'line.branch'])->get()->map(function ($transaction) {
+        $ordinaryCount = (clone $ordinary)->count();
+
+        $ordinaryTxs = $ordinary->with(['agent', 'agent.branch', 'line', 'line.branch'])
+            ->orderBy('transaction_date_time', 'desc')
+            ->limit($limit)
+            ->get()->map(function ($transaction) {
             $arr = $transaction->toArray();
             $arr['agent_name'] = $transaction->agent ? $transaction->agent->name : 'N/A';
 
@@ -577,7 +604,8 @@ class EloquentTransactionRepository implements TransactionRepository
         });
 
         // Fetch cash transactions - skip if filtering by transfer line
-        $cashTxs = collect();
+        $cashTxs   = collect();
+        $cashCount = 0;
         if (!$skipCashTransactions) {
             $cash = CashTransaction::query();
             if (isset($filters['start_date']) && $filters['start_date']) {
@@ -665,7 +693,12 @@ class EloquentTransactionRepository implements TransactionRepository
                     $q->whereRaw("REPLACE(REPLACE(REPLACE(depositor_mobile_number, '-', ''), ' ', ''), '+', '') LIKE ?", ['%' . $mobileNumber . '%']);
                 });
             }
-            $cashTxs = $cash->with(['agent', 'agent.branch', 'safe.branch'])->get()->map(function ($transaction) {
+            $cashCount = (clone $cash)->count();
+
+            $cashTxs = $cash->with(['agent', 'agent.branch', 'safe.branch'])
+                ->orderBy('transaction_date_time', 'desc')
+                ->limit($limit)
+                ->get()->map(function ($transaction) {
                 // Handle expense withdrawals - they should be deducted from branch-specific profit
                 $commission = 0; // Cash transactions have no commission
                 $deduction = 0;
@@ -767,6 +800,10 @@ class EloquentTransactionRepository implements TransactionRepository
         }
 
         $all = $all->values();
+        $totalCount = $ordinaryCount + $cashCount;
+
+        // Slice to the requested page window
+        $paginated = $all->slice(($page - 1) * $perPage, $perPage)->values();
 
         $totalTransferred = $all->sum('amount');
         // Exclude line transfer commissions from total commissions (they are expenses, not revenue)
@@ -801,13 +838,14 @@ class EloquentTransactionRepository implements TransactionRepository
         }
 
         return [
-            'transactions' => $all->toArray(),
+            'transactions' => $paginated->toArray(),
+            'total_count'  => $totalCount,
             'totals' => [
                 'total_transferred' => $totalTransferred,
                 'total_commission' => $totalCommission,
                 'total_deductions' => $totalDeductions,
                 'net_profit' => $netProfit,
-                'branch_profits' => $branchProfits, // Add branch-specific profits for debugging
+                'branch_profits' => $branchProfits,
             ],
         ];
     }
